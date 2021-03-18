@@ -1,0 +1,201 @@
+pragma solidity >=0.4.22 <0.7.0;
+
+contract LocationTrackingSC {
+
+    address owner = 0x14723A09ACff6D2A60DcdF7aA4AFf308FDDC160C;
+    
+
+modifier OnlyOwner(){
+    require(msg.sender == owner);
+    _;
+}
+
+//events
+    event ProofOfLocation(address EA, int lat, int long, uint256 time);
+   
+   //Triggers proof of location events
+    function TriggerLocationAlert(address EA, int lat, int long, uint256 time) OnlyOwner public {
+        emit ProofOfLocation(EA,lat,long,time);
+    }
+   
+    
+}
+
+
+
+
+pragma solidity >=0.4.22 <0.7.0;
+
+ 
+contract OraclesSC{
+   
+    address OraclesSCowner;
+    mapping(address=>bool) public RegisteredOracles;
+   
+    constructor() public{
+       OraclesSCowner = msg.sender;
+    }
+   
+    modifier OnlyOraclesSCowner{
+      require(msg.sender == OraclesSCowner);
+      _;
+    }
+   
+    function RegisterOracle(address a) OnlyOraclesSCowner public{
+        RegisteredOracles[a]=true;
+    }
+   
+    function RevokeOracle(address a) OnlyOraclesSCowner public{
+        RegisteredOracles[a]=false;
+    }
+   
+    function restrictedFunction() public {
+        require(RegisteredOracles[msg.sender]);
+       
+    }
+}
+
+
+contract Covid19NotificationSC is OraclesSC{
+
+    address owner;
+    uint public RedAlertTimestamp;
+    uint public RedID;
+    uint public YellowID;
+    uint public YellowAletTimestamp;
+    uint currentID;
+    address public chosenOracle;
+    uint[] public RequestIDs;// an array of IDs
+    uint public ReqID;
+    bytes32[] public allListHashes; // stores hashes of all lists from all oracles 
+    address[] public OraclesEA;//Ordered (Chronological) EA of the oracles that returned the contact tracing list.
+    mapping(uint=>uint) public ID_Timestamp;//to store every request ID and its timestamp
+    mapping(bytes32=>bool) public Hash_bool;//use to ensure that an oracle can only enter once. bytes32 is the keccak256 hash of the RequestID concatenated with the Request time stamp
+    
+    constructor() public{
+       owner = msg.sender;
+      
+       ReqID=0;
+       currentID = 1;
+    }
+//testing center
+modifier OnlyOwner(){
+    require(msg.sender == owner);
+    _;
+}
+
+
+
+//timer oracle
+modifier OnlyTimerOracle(){
+    require(msg.sender == 0xdD870fA1b7C4700F2BD7f44238821C26f7392148);
+    _;
+}
+
+//timer oracle
+modifier OnlyChosenOracle(){
+    require(msg.sender == chosenOracle);
+    _;
+}
+
+//events
+    event IssueRedAlert(uint ReqID, address EA, uint256 time,string result);
+    event IssueYellowAlert(uint ReqID, address EA, address sourceEA, uint256 time,string result);
+    event IssueClearAlert(uint ReqID, address EA, uint256 time, string result);
+    event ChosenOracleHash(address x, bytes32 hash);
+    event ContactTracingListYellowAlert(uint ID, address EA, bool value);
+    
+   
+   //Send Covid19 Test Results (red,yellow,clear)
+    function SendCovid19TestResults(address EA,address sourceEA, uint result) OnlyOwner public {
+        require((result  == 1)||(result == 2) || (result == 3));
+        if(result == 1)//red
+        {
+            RedAlertTimestamp = block.timestamp;
+            RedID = ++ReqID;
+            ID_Timestamp[RedID] = RedAlertTimestamp;
+            emit IssueRedAlert(RedID,EA,RedAlertTimestamp,"Covid19 Positive");
+            
+        }
+         else if(result  == 2)
+        {
+            YellowAletTimestamp = block.timestamp;
+            YellowID = ++ReqID;
+            ID_Timestamp[YellowID] = YellowAletTimestamp;
+            emit IssueYellowAlert(YellowID,EA,sourceEA,YellowAletTimestamp,"Covid19 Contact");
+            
+        }
+        else if(result == 3)//clear
+        {
+            emit IssueClearAlert(++ReqID,EA, block.timestamp ,"Covid19 Clear");
+        }
+        
+        
+        
+    }
+    
+   
+   bytes32 hash = 0;
+   uint count =0;
+    //for testing the hash 
+  //["0x64","0xEC","0x88","0xCA","0x00","0xB2","0x68","0xE5","0xBA","0x1A","0x35","0x67","0x8A","0x1B","0x53","0x16","0xD2","0x12","0xF4","0xF3","0x66","0xB2","0x47","0x72","0x32","0x53","0x4A","0x8A","0xEC","0xA3","0x7F","0x3C"]   
+  
+   //Function that will receive the hashes of the contacts list
+   function ReturnHashes(uint ID, uint timestamp, bytes32 listHash) public{
+       require (ID == currentID);
+        require(RegisteredOracles[msg.sender]);  //To be executed by registered oracles only
+        require (ID_Timestamp[ID] == timestamp);//using the ID sent by the oracle to verify the timestamp sent also by the oracle
+        hash = keccak256(abi.encodePacked(msg.sender,ID));//the arguments are concatenated without padding
+        require (!Hash_bool[hash]);
+        require(now <= (timestamp + 10000 seconds));//1 min should be 60 sec .. just for testing it is 10000
+        Hash_bool[hash] = true;//store that they entered once
+        allListHashes.push(listHash);
+        OraclesEA.push(msg.sender);//store EA of the oracle
+        //count++;// size of the array*/
+        
+    }
+    
+    function ChooseOracle() OnlyTimerOracle public{
+        uint256 x = uint256(findMajority(allListHashes, allListHashes.length));//convert type so its suitable to use as index of an array
+        chosenOracle = OraclesEA[x];
+        emit ChosenOracleHash(chosenOracle, allListHashes[x]);
+        currentID = currentID +1;
+        delete allListHashes;
+        delete OraclesEA;
+    }
+    
+    function EnterContactTracingList (uint ID, address EA, bool value)OnlyChosenOracle public
+    {
+        emit ContactTracingListYellowAlert(ID, EA, value);//value becomes false to indicate that this is the last entry
+    }
+    // Function to find Majority element 
+// in an array , it takes the array of hashes and the size of the array, returns index of value
+function findMajority( bytes32[] memory arr, uint n)internal returns(int index) 
+{ 
+    uint maxCount = 0; 
+    int index = -1; // sentinels 
+    for (uint i = 0; i < n; i++) { 
+        uint count = 0; 
+        for (uint j = 0; j < n; j++) { 
+            if (arr[i] == arr[j]) 
+                count++; 
+        } 
+  
+        // update maxCount if count of 
+        // current element is greater 
+        if (count > maxCount) { 
+            maxCount = count; 
+            index = int256(i); 
+        } 
+    } 
+  
+    // if maxCount is greater than n/2 
+    // return the corresponding element 
+    if (maxCount >= n / 2) //>=
+        return index; 
+  
+   
+} 
+  
+    
+}
